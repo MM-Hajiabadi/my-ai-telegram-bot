@@ -29,7 +29,7 @@ def get_llm_response(prompt, system_prompt="You are a helpful AI assistant."):
     
     # Using gemini-2.5-flash which is extremely fast, free, and robust
     data = {
-        "model": "google/gemini-2.5-flash:free",
+        "model": "google/gemma-4-31b-it:free",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
