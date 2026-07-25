@@ -27,7 +27,6 @@ def get_llm_response(prompt, system_prompt="You are a helpful AI assistant."):
         "Content-Type": "application/json",
     }
     
-    # Using gemini-2.5-flash which is extremely fast, free, and robust
     data = {
         "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
         "messages": [
@@ -39,7 +38,6 @@ def get_llm_response(prompt, system_prompt="You are a helpful AI assistant."):
     try:
         response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=30)
         
-        # Check if HTTP request failed (like 401, 404, 500)
         if response.status_code != 200:
             print(f"OpenRouter API returned error code {response.status_code}: {response.text}")
             return None
@@ -91,13 +89,12 @@ def send_telegram_post(text, image_url=None):
     base_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
     
     # Ensure text is not exceeding Telegram's 1024-character caption limit.
-    # If it is slightly over, we truncate to 1020 chars and add "..." to guarantee they are posted together.
     if len(text) > 1024:
         print(f"Warning: Post length ({len(text)}) exceeds Telegram's caption limit of 1024. Truncating...")
         text = text[:1020] + "..."
         
     if image_url:
-        print("Sending photo with unified caption...")
+        print(f"Sending photo with unified caption... Image URL: {image_url}")
         url = f"{base_url}/sendPhoto"
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
@@ -117,14 +114,37 @@ def send_telegram_post(text, image_url=None):
         
     try:
         response = requests.post(url, json=payload, timeout=20)
+        # CRITICAL CHANGE: If the response fails, raise HTTPError so GitHub Action fails too
+        # This prevents "silent success" where GitHub says green but telegram got nothing!
         response.raise_for_status()
-        print("Telegram post sent successfully!")
+        print("Telegram API accepted the post!")
         return True
     except Exception as e:
-        print(f"Error sending to Telegram: {e}")
+        print(f"Error sending to Telegram API: {e}")
         if response is not None:
-            print(f"Response details: {response.text}")
-        return False
+            print(f"Response details from Telegram: {response.text}")
+            
+        # Fallback: If sending WITH photo failed (e.g., bad image URL), try sending text only
+        if image_url:
+            print("Fallback: Attempting to send text-only message due to photo failure...")
+            try:
+                url_fallback = f"{base_url}/sendMessage"
+                payload_fallback = {
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "text": text,
+                    "parse_mode": "HTML"
+                }
+                response_fb = requests.post(url_fallback, json=payload_fallback, timeout=20)
+                response_fb.raise_for_status()
+                print("Fallback text-only post sent successfully!")
+                return True
+            except Exception as e_fb:
+                print(f"Fallback also failed: {e_fb}")
+                if response_fb is not None:
+                    print(f"Fallback response: {response_fb.text}")
+        
+        # We raise exception here so GitHub Actions registers this run as FAILED
+        raise e
 
 def main():
     # Verify environment variables
@@ -155,7 +175,6 @@ def main():
     search_results = search_web(search_query)
     
     # Step 3: Write the post
-    # We strictly enforce length limit (max 750 characters) in the prompt to leave room for HTML tags.
     if search_results:
         prompt_post = f"""
 Based on the following search results about "{search_query}":
@@ -168,9 +187,10 @@ Requirements:
 1. Explain the problem/concept clearly.
 2. Provide a practical solution, code snippet, or key takeaway.
 3. Use a friendly, technical, and premium tone with appropriate emojis.
-4. Format in clean HTML for Telegram (use only <b>bold</b>, <i>italic</i>, and <code>code</code> tags. NO markdown).
+4. Format in clean HTML for Telegram (use only <b>bold</b>, <i>italic</i>, and <code>code</code> tags. NO markdown like ** or `).
 5. CRITICAL: The entire post including HTML tags MUST be under 750 characters. Keep it concise, high-density, and impactful.
 6. End with an engaging question.
+7. Use hashtags relevant to the text. Maximum of 3.
 """
     else:
         prompt_post = f"""
@@ -182,6 +202,7 @@ Requirements:
 4. Format in clean HTML (use only <b>, <i>, and <code>. NO markdown).
 5. CRITICAL: The entire post including HTML tags MUST be under 750 characters.
 6. End with an engaging question.
+7. Use hashtags relevant to the text. Maximum of 3.
 """
 
     post_content = get_llm_response(prompt_post, "You are a master technical content writer. You write beautiful, high-density, formatted English posts for a Telegram channel. You are extremely strict about keeping the text brief (under 750 characters) so it fits as an image caption.")
