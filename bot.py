@@ -58,7 +58,6 @@ def search_web(query):
     """Search the web using DuckDuckGo (Free, no API key needed)."""
     try:
         print(f"Searching DuckDuckGo for: '{query}'")
-        # DDGS call updated to the latest standard
         ddgs = DDGS()
         results = list(ddgs.text(query, max_results=4))
         summary_text = ""
@@ -88,12 +87,17 @@ def get_pexels_image(query):
     return None
 
 def send_telegram_post(text, image_url=None):
-    """Send the final post to Telegram (with or without photo)."""
+    """Send the final post to Telegram as a single unified message (photo with caption)."""
     base_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
     
-    # If we have an image and the text is short enough to fit in caption
-    if image_url and len(text) <= 1000:
-        print("Sending photo with caption...")
+    # Ensure text is not exceeding Telegram's 1024-character caption limit.
+    # If it is slightly over, we truncate to 1020 chars and add "..." to guarantee they are posted together.
+    if len(text) > 1024:
+        print(f"Warning: Post length ({len(text)}) exceeds Telegram's caption limit of 1024. Truncating...")
+        text = text[:1020] + "..."
+        
+    if image_url:
+        print("Sending photo with unified caption...")
         url = f"{base_url}/sendPhoto"
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
@@ -102,13 +106,7 @@ def send_telegram_post(text, image_url=None):
             "parse_mode": "HTML"
         }
     else:
-        print("Sending text-only message (or text separate from photo)...")
-        if image_url:
-            try:
-                requests.post(f"{base_url}/sendPhoto", json={"chat_id": TELEGRAM_CHAT_ID, "photo": image_url}, timeout=15)
-            except Exception as e:
-                print(f"Failed to send separate photo: {e}")
-        
+        print("No image URL provided. Sending text-only message...")
         url = f"{base_url}/sendMessage"
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
@@ -124,6 +122,8 @@ def send_telegram_post(text, image_url=None):
         return True
     except Exception as e:
         print(f"Error sending to Telegram: {e}")
+        if response is not None:
+            print(f"Response details: {response.text}")
         return False
 
 def main():
@@ -146,7 +146,7 @@ def main():
     search_query = get_llm_response(prompt_q, "You are a specialized technical assistant. You only output precise search keywords.")
     
     if not search_query:
-        print("Could not generate search query using OpenRouter. Check if your API key is correct and active. Using default query as fallback.")
+        print("Could not generate search query using OpenRouter. Using default query.")
         search_query = f"latest trends in {theme}"
     
     print(f"Generated search query: '{search_query}'")
@@ -155,6 +155,7 @@ def main():
     search_results = search_web(search_query)
     
     # Step 3: Write the post
+    # We strictly enforce length limit (max 750 characters) in the prompt to leave room for HTML tags.
     if search_results:
         prompt_post = f"""
 Based on the following search results about "{search_query}":
@@ -162,35 +163,30 @@ Based on the following search results about "{search_query}":
 {search_results}
 ---
 
-Write a highly engaging, informative, and professional Telegram post in English.
+Write an exceptionally engaging, informative, and professional Telegram post in English.
 Requirements:
 1. Explain the problem/concept clearly.
 2. Provide a practical solution, code snippet, or key takeaway.
-3. Use a friendly, technical, and premium tone.
-4. Use appropriate emojis to make it readable.
-5. Format the post in clean HTML for Telegram (use <b>bold</b>, <i>italic</i>, and <code>code</code> tags. Do NOT use markdown like ** or `).
-6. Keep the response under 900 characters so it fits as a photo caption.
-7. End with a relevant question to engage readers and the channel's signature.
-8. Use relevant hashtags. A maximum of three.
+3. Use a friendly, technical, and premium tone with appropriate emojis.
+4. Format in clean HTML for Telegram (use only <b>bold</b>, <i>italic</i>, and <code>code</code> tags. NO markdown).
+5. CRITICAL: The entire post including HTML tags MUST be under 750 characters. Keep it concise, high-density, and impactful.
+6. End with an engaging question.
 """
     else:
-        print("No search results found. Generating post from LLM directly.")
         prompt_post = f"""
-Write a highly engaging, informative, and professional Telegram post in English about "{search_query}".
+Write an engaging English tech post about "{search_query}".
 Requirements:
-1. Explain this technical concept/problem clearly.
+1. Explain the technical concept clearly.
 2. Provide a practical solution or code snippet.
-3. Use a friendly, technical, and premium tone.
-4. Use appropriate emojis.
-5. Format in clean HTML (use <b>, <i>, and <code> tags. No markdown).
-6. Keep the response under 900 characters.
-7. End with an engaging question.
-8. Use relevant hashtags. A maximum of three.
+3. Use a friendly, technical, and premium tone with appropriate emojis.
+4. Format in clean HTML (use only <b>, <i>, and <code>. NO markdown).
+5. CRITICAL: The entire post including HTML tags MUST be under 750 characters.
+6. End with an engaging question.
 """
 
-    post_content = get_llm_response(prompt_post, "You are a creative technical content writer. You write beautiful, formatted English posts for a premium Telegram channel about AI and technology. Always use HTML tags.")
+    post_content = get_llm_response(prompt_post, "You are a master technical content writer. You write beautiful, high-density, formatted English posts for a Telegram channel. You are extremely strict about keeping the text brief (under 750 characters) so it fits as an image caption.")
     if not post_content:
-        print("ERROR: Failed to generate post content. Please verify your OpenRouter API key and internet connectivity.")
+        print("ERROR: Failed to generate post content.")
         sys.exit(1)
         
     print("Generated Post Content:")
