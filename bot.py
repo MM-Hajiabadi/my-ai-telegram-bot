@@ -2,7 +2,7 @@ import os
 import sys
 import random
 import requests
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 # Get secrets from GitHub Environment Variables
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
