@@ -2,11 +2,11 @@ name: Run Daily AI Bot
 
 on:
   schedule:
-    - cron: '0 9 * * *'     # 9:00
-    - cron: '0 12 * * *'    # 12:00 (ظهر)
-    - cron: '0 15 * * *'    # 15:00 (3 بعد از ظهر)
-    - cron: '0 18 * * *'    # 18:00 (6 بعد از ظهر)
-    - cron: '0 21 * * *'    # 21:00 (9 شب)
+    - cron: '0 9 * * *'     
+    - cron: '0 12 * * *'   
+    - cron: '0 15 * * *'    
+    - cron: '0 18 * * *'   
+    - cron: '0 21 * * *'   
   workflow_dispatch:
   
 jobs:
