@@ -1,6 +1,7 @@
 import os
 import sys
 import random
+import re
 import requests
 from ddgs import DDGS
 
@@ -19,6 +20,137 @@ THEMES = [
     "Linux administration, bash scripting, and networking",
     "Web development, APIs, and automation"
 ]
+
+# ==============================================================
+# HTML SAFETY FUNCTIONS for Telegram
+# ==============================================================
+
+ALLOWED_TAGS = {"b", "i", "code", "pre", "a", "strong", "em", "s", "u"}
+
+def fix_html_tags(text):
+    """
+    Fix common Telegram HTML issues:
+    1. Remove unknown/disallowed tags entirely.
+    2. Auto-close unclosed allowed tags.
+    3. Replace mismatched closing tags.
+    """
+    # Step 1: Remove all tags that are NOT in ALLOWED_TAGS
+    def strip_disallowed(match):
+        full = match.group(0)
+        if full.startswith('</'):
+            tag_name = full[2:-1].split()[0].rstrip('>')
+        else:
+            tag_name = full[1:].split()[0].rstrip('>').split('<')[0]
+        if tag_name.lower() not in ALLOWED_TAGS:
+            return ''
+        return full
+
+    text = re.sub(r'</?[\w\-]+(?:\s[^>]*)?>', strip_disallowed, text)
+
+    # Step 2: Build a stack of opening tags; auto-close unclosed ones
+    stack = []
+    i = 0
+    result_chars = []
+    
+    while i < len(text):
+        close_match = re.match(r'</(\w+)>', text[i:])
+        if close_match:
+            tag = close_match.group(1).lower()
+            if tag in ALLOWED_TAGS:
+                if stack and stack[-1] == tag:
+                    stack.pop()
+                    result_chars.append(f'</{tag}>')
+                elif tag in stack:
+                    while stack and stack[-1] != tag:
+                        stack.pop()
+                    if stack and stack[-1] == tag:
+                        stack.pop()
+                    result_chars.append(f'</{tag}>')
+                else:
+                    pass  # ignore orphan closing tag
+            i += len(close_match.group(0))
+            continue
+        
+        open_match = re.match(r'<(\w+)(\s[^>]*)?>', text[i:])
+        if open_match:
+            tag = open_match.group(1).lower()
+            if tag in ALLOWED_TAGS and tag not in ('br', 'hr', 'img', 'input', 'meta', 'link'):
+                stack.append(tag)
+                result_chars.append(open_match.group(0))
+            i += len(open_match.group(0))
+            continue
+        
+        sc_match = re.match(r'<(\w+)\s*/?>', text[i:])
+        if sc_match and sc_match.group(1).lower() in ALLOWED_TAGS:
+            result_chars.append(sc_match.group(0))
+            i += len(sc_match.group(0))
+            continue
+        
+        result_chars.append(text[i])
+        i += 1
+    
+    for tag in reversed(stack):
+        result_chars.append(f'</{tag}>')
+    
+    return ''.join(result_chars)
+
+
+def safe_truncate_html(html_text, max_length=1000):
+    """Truncate HTML without breaking tags."""
+    if len(html_text) <= max_length:
+        return html_text
+    
+    truncated = html_text[:max_length]
+    truncated = re.sub(r'<[^>]*$', '', truncated)
+    
+    stack = []
+    i = 0
+    result_chars = []
+    
+    while i < len(truncated):
+        close_match = re.match(r'</(\w+)>', truncated[i:])
+        if close_match:
+            tag = close_match.group(1).lower()
+            if tag in ALLOWED_TAGS:
+                if stack and stack[-1] == tag:
+                    stack.pop()
+                elif tag in stack:
+                    while stack and stack[-1] != tag:
+                        stack.pop()
+if stack:
+                        stack.pop()
+            i += len(close_match.group(0))
+            result_chars.append(close_match.group(0))
+            continue
+        
+        open_match = re.match(r'<(\w+)(\s[^>]*)?>', truncated[i:])
+        if open_match:
+            tag = open_match.group(1).lower()
+            if tag in ALLOWED_TAGS and tag not in ('br', 'hr', 'img', 'input', 'meta', 'link'):
+                stack.append(tag)
+            result_chars.append(open_match.group(0))
+            i += len(open_match.group(0))
+            continue
+        
+        result_chars.append(truncated[i])
+        i += 1
+    
+    for tag in reversed(stack):
+        result_chars.append(f'</{tag}>')
+    
+    return ''.join(result_chars) + '...'
+
+
+def make_telegram_safe(text, max_length=1000):
+    """Full pipeline: fix HTML tags, then safely truncate."""
+    text = fix_html_tags(text)
+    text = safe_truncate_html(text, max_length)
+    return text
+
+
+# ==============================================================
+# CORE FUNCTIONS
+# ==============================================================
 
 def get_llm_response(prompt, system_prompt="You are a helpful AI assistant."):
     """Helper to query OpenRouter using a free model."""
@@ -85,96 +217,101 @@ def get_pexels_image(query):
     return None
 
 def send_telegram_post(text, image_url=None):
-    """Send the final post to Telegram as a single unified message (photo with caption)."""
+    """Send post to Telegram with multiple fallback layers."""
     base_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
     
-    # Ensure text is not exceeding Telegram's 1024-character caption limit.
-    if len(text) > 1024:
-        print(f"Warning: Post length ({len(text)}) exceeds Telegram's caption limit of 1024. Truncating...")
-        text = text[:1020] + "..."
-        
+    text = make_telegram_safe(text, max_length=1000)
+    
+    # Attempt 1: Photo + HTML caption
     if image_url:
-        print(f"Sending photo with unified caption... Image URL: {image_url}")
-        url = f"{base_url}/sendPhoto"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "photo": image_url,
-            "caption": text,
-            "parse_mode": "HTML"
-        }
-    else:
-        print("No image URL provided. Sending text-only message...")
-        url = f"{base_url}/sendMessage"
-        payload = {
+        print(f"Sending photo with HTML caption... Image URL: {image_url}")
+        try:
+            response = requests.post(f"{base_url}/sendPhoto", json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "photo": image_url,
+                "caption": text,
+                "parse_mode": "HTML"
+            }, timeout=20)
+            if response.status_code == 200:
+                print("Post sent successfully (Photo+HTML)!")
+                return True
+            print(f"Photo+HTML failed ({response.status_code}): {response.text}")
+        except Exception as e:
+            print(f"Photo+HTML exception: {e}")
+    
+    # Attempt 2: Photo + Plain text caption
+    if image_url:
+        plain = re.sub(r'<[^>]+>', '', text)
+        if len(plain) > 1024:
+            plain = plain[:1021] + '...'
+        print("Attempt 2: Photo + plain caption...")
+        try:
+            response = requests.post(f"{base_url}/sendPhoto", json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "photo": image_url,
+                "caption": plain
+            }, timeout=20)
+            if response.status_code == 200:
+                print("Post sent successfully (Photo+Plain)!")
+                return True
+        except Exception as e:
+            print(f"Attempt 2 failed: {e}")
+    
+    # Attempt 3: Text-only with HTML
+    print("Attempt 3: Text-only with HTML...")
+    try:
+        response = requests.post(f"{base_url}/sendMessage", json={
             "chat_id": TELEGRAM_CHAT_ID,
             "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": False
-        }
-        
-    try:
-        response = requests.post(url, json=payload, timeout=20)
-        # CRITICAL CHANGE: If the response fails, raise HTTPError so GitHub Action fails too
-        # This prevents "silent success" where GitHub says green but telegram got nothing!
-        response.raise_for_status()
-        print("Telegram API accepted the post!")
-        return True
+            "parse_mode": "HTML"
+        }, timeout=20)
+        if response.status_code == 200:
+            print("Post sent successfully (Text+HTML)!")
+            return True
+        print(f"Attempt 3 failed ({response.status_code}): {response.text}")
     except Exception as e:
-        print(f"Error sending to Telegram API: {e}")
-        if response is not None:
-            print(f"Response details from Telegram: {response.text}")
-            
-        # Fallback: If sending WITH photo failed (e.g., bad image URL), try sending text only
-        if image_url:
-            print("Fallback: Attempting to send text-only message due to photo failure...")
-            try:
-                url_fallback = f"{base_url}/sendMessage"
-                payload_fallback = {
-                    "chat_id": TELEGRAM_CHAT_ID,
-                    "text": text,
-                    "parse_mode": "HTML"
-                }
-                response_fb = requests.post(url_fallback, json=payload_fallback, timeout=20)
-                response_fb.raise_for_status()
-                print("Fallback text-only post sent successfully!")
-                return True
-            except Exception as e_fb:
-                print(f"Fallback also failed: {e_fb}")
-                if response_fb is not None:
-                    print(f"Fallback response: {response_fb.text}")
-        
-        # We raise exception here so GitHub Actions registers this run as FAILED
-        raise e
+        print(f"Attempt 3 exception: {e}")
+    
+    # Attempt 4: Plain text only
+    plain = re.sub(r'<[^>]+>', '', text)
+    print("Attempt 4: Plain text only...")
+    try:
+        response = requests.post(f"{base_url}/sendMessage", json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": plain
+        }, timeout=20)
+        if response.status_code == 200:
+            print("Post sent successfully (Plain)!")
+            return True
+        print(f"Attempt 4 failed: {response.text}")
+    except Exception as e:
+        print(f"Attempt 4 exception: {e}")
+    
+    raise Exception("All 4 send attempts failed.")
 
 def main():
-    # Verify environment variables
     if not OPENROUTER_API_KEY:
-        print("ERROR: OPENROUTER_API_KEY is not set or empty in GitHub Secrets!")
+        print("ERROR: OPENROUTER_API_KEY is not set!")
         sys.exit(1)
     if not TELEGRAM_BOT_TOKEN:
-        print("ERROR: TELEGRAM_BOT_TOKEN is not set or empty in GitHub Secrets!")
+        print("ERROR: TELEGRAM_BOT_TOKEN is not set!")
         sys.exit(1)
     if not TELEGRAM_CHAT_ID:
-        print("ERROR: TELEGRAM_CHAT_ID is not set or empty in GitHub Secrets!")
+        print("ERROR: TELEGRAM_CHAT_ID is not set!")
         sys.exit(1)
         
     theme = random.choice(THEMES)
     print(f"Selected Theme: {theme}")
     
-    # Step 1: Generate search query using OpenRouter
-    prompt_q = f"Generate one interesting, practical, and real-world question or technical challenge related to '{theme}'. Return ONLY the English search query or keywords that we should search on Google to find the best, most up-to-date solution for this problem. No introduction, no markdown, just the raw search query."
-    search_query = get_llm_response(prompt_q, "You are a specialized technical assistant. You only output precise search keywords.")
+    prompt_q = f"Generate one interesting, practical, and real-world question or technical challenge related to '{theme}'. Return ONLY the English search query or keywords that we should search on Google to find the best solution. No introduction, no markdown, just the raw search query."
+    search_query = get_llm_response(prompt_q, "You only output precise search keywords.")
     
     if not search_query:
-        print("Could not generate search query using OpenRouter. Using default query.")
         search_query = f"latest trends in {theme}"
     
-    print(f"Generated search query: '{search_query}'")
-    
-    # Step 2: Search the web
+    print(f"Query: '{search_query}'")
     search_results = search_web(search_query)
     
-    # Step 3: Write the post
     if search_results:
         prompt_post = f"""
 Based on the following search results about "{search_query}":
@@ -182,44 +319,44 @@ Based on the following search results about "{search_query}":
 {search_results}
 ---
 
-Write an exceptionally engaging, informative, and professional Telegram post in English.
+Write an engaging Telegram post in English.
 Requirements:
 1. Explain the problem/concept clearly.
-2. Provide a practical solution, code snippet, or key takeaway.
-3. Use a friendly, technical, and premium tone with appropriate emojis.
-4. Format in clean HTML for Telegram (use only <b>bold</b>, <i>italic</i>, and <code>code</code> tags. NO markdown like ** or `).
-5. CRITICAL: The entire post including HTML tags MUST be under 750 characters. Keep it concise, high-density, and impactful.
-6. End with an engaging question.
-7. Use hashtags relevant to the text. Maximum of 3.
+2. Provide a solution or key takeaway.
+3. Use emojis, friendly technical tone.
+4. HTML format (only <b>, <i>, <code>. NO markdown).
+5. MUST be under 750 characters total.
+6. End with a question.
+7. Add up to 3 hashtags.
 """
     else:
         prompt_post = f"""
 Write an engaging English tech post about "{search_query}".
 Requirements:
-1. Explain the technical concept clearly.
-2. Provide a practical solution or code snippet.
-3. Use a friendly, technical, and premium tone with appropriate emojis.
-4. Format in clean HTML (use only <b>, <i>, and <code>. NO markdown).
-5. CRITICAL: The entire post including HTML tags MUST be under 750 characters.
-6. End with an engaging question.
-7. Use hashtags relevant to the text. Maximum of 3.
+1. Explain the concept clearly.
+2. Provide a solution or code snippet.
+3. Use emojis, friendly tone.
+4. HTML format (only <b>, <i>, <code>. NO markdown).
+5. MUST be under 750 characters.
+6. End with a question.
+7. Add up to 3 hashtags.
 """
 
-    post_content = get_llm_response(prompt_post, "You are a master technical content writer. You write beautiful, high-density, formatted English posts for a Telegram channel. You are extremely strict about keeping the text brief (under 750 characters) so it fits as an image caption.")
-    if not post_content:
+    post_content = get_llm_response(prompt_post, "You write concise HTML-formatted posts for Telegram. Strictly under 750 characters.")
+
+if not post_content:
         print("ERROR: Failed to generate post content.")
         sys.exit(1)
-        
-    print("Generated Post Content:")
+    
+    print(f"Post ({len(post_content)} chars):")
     print(post_content)
     
-    # Step 4: Get image
-    img_prompt = f"Extract 1 or 2 simple English words suitable for finding a high-quality abstract tech photo on Pexels representing: '{search_query}'. Example: 'artificial intelligence' or 'coding' or 'server'. Return ONLY the keywords, no other text."
-    img_keywords = get_llm_response(img_prompt, "You output only 1-2 keywords.")
+    img_prompt = f"Extract 1-2 English keywords for a Pexels photo representing: '{search_query}'. Example: 'artificial intelligence'. Return ONLY keywords."
+    img_keywords = get_llm_response(img_prompt, "Output only 1-2 keywords.")
     if not img_keywords:
         img_keywords = "technology"
     
-    print(f"Image search keywords: '{img_keywords}'")
+    print(f"Image keywords: '{img_keywords}'")
     image_url = get_pexels_image(img_keywords)
     
     if not image_url:
@@ -230,9 +367,8 @@ Requirements:
             "https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=800"
         ]
         image_url = random.choice(fallback_images)
-        print(f"Using fallback image: {image_url}")
-        
-    # Step 5: Send to Telegram
+        print(f"Fallback image: {image_url}")
+    
     send_telegram_post(post_content, image_url)
 
 if __name__ == "__main__":
