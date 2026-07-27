@@ -117,7 +117,7 @@ def safe_truncate_html(html_text, max_length=1000):
                 elif tag in stack:
                     while stack and stack[-1] != tag:
                         stack.pop()
-if stack:
+                    if stack and stack[-1] == tag:  # Fixed: proper indentation
                         stack.pop()
             i += len(close_match.group(0))
             result_chars.append(close_match.group(0))
